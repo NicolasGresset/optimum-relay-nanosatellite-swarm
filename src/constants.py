@@ -1,0 +1,5 @@
+R_EARTH = 6_378_137.0 # m
+OMEGA_EARTH = 7.2921159e-5 # rad
+MU_EARTH = 3.986004418e14 # m^3/s^2
+SPEED_OF_LIGHT: float = 3e8  # m/s
+BOLTZMANN: float = 1.38e-23  # J/K
