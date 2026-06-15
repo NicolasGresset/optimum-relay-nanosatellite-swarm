@@ -8,14 +8,11 @@ parallel simulation, and standard metric extraction.
 from __future__ import annotations
 
 import io
-import math
 from contextlib import redirect_stdout
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Any, Iterator
 import sys
-
-import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -88,19 +85,31 @@ def _worker_init(graphs: list) -> None:
     _worker_graphs = graphs
 
 
+Task = tuple[SimulationParams, "list[str] | None"] | tuple[SimulationParams, "list[str] | None", dict]
+
+
+def _split_task(task: Task) -> tuple[SimulationParams, list[str] | None, dict]:
+    """Normalizes a task tuple into (params, relay_nodes, extra_kwargs)."""
+    if len(task) == 3:
+        params, relay_nodes, extra_kwargs = task
+        return params, relay_nodes, extra_kwargs
+    params, relay_nodes = task
+    return params, relay_nodes, {}
+
+
 def _worker_run(
-    task: tuple[int, SimulationParams, list[str] | None],
+    task: tuple[int, SimulationParams, list[str] | None, dict],
 ) -> tuple[int, SimulationResult]:
-    idx, params, relay_nodes = task
+    idx, params, relay_nodes, extra_kwargs = task
     assert _worker_graphs is not None
     buf = io.StringIO()
     with redirect_stdout(buf):
-        return idx, _simulate(_worker_graphs, params, relay_nodes)
+        return idx, _simulate(_worker_graphs, params, relay_nodes, **extra_kwargs)
 
 
 def run_batch(
     graphs: list,
-    tasks: list[tuple[SimulationParams, list[str] | None]],
+    tasks: list[Task],
     max_workers: int = 4,
 ) -> list[SimulationResult]:
     """
@@ -108,7 +117,9 @@ def run_batch(
 
     Args:
         graphs: Pre-built connectivity graphs (shared across all tasks).
-        tasks: List of (SimulationParams, relay_nodes) pairs.
+        tasks: List of (SimulationParams, relay_nodes) or
+            (SimulationParams, relay_nodes, extra_kwargs) tuples, where
+            extra_kwargs is passed through to ``simulate`` (e.g. assignment).
         max_workers: Number of worker processes. 1 disables multiprocessing.
 
     Returns:
@@ -118,16 +129,17 @@ def run_batch(
 
     if max_workers <= 1 or n == 1:
         results = []
-        for i, (params, relay_nodes) in enumerate(tasks):
+        for i, task in enumerate(tasks):
+            params, relay_nodes, extra_kwargs = _split_task(task)
             buf = io.StringIO()
             with redirect_stdout(buf):
-                results.append(_simulate(graphs, params, relay_nodes))
+                results.append(_simulate(graphs, params, relay_nodes, **extra_kwargs))
             print(f"  [{i + 1}/{n}]", end="\r", flush=True)
         print()
         return results
 
     indexed = [
-        (i, params, relay_nodes) for i, (params, relay_nodes) in enumerate(tasks)
+        (i, *_split_task(task)) for i, task in enumerate(tasks)
     ]
     collected: list[tuple[int, SimulationResult]] = []
 
@@ -146,14 +158,16 @@ def run_batch(
 
 def iter_batch(
     graphs: list,
-    tasks: list[tuple[SimulationParams, list[str] | None]],
+    tasks: list[Task],
     max_workers: int = 4,
 ) -> Iterator[tuple[int, SimulationResult]]:
     """Yield (original_index, result) as simulations complete (fastest first).
 
     Args:
         graphs: Pre-built connectivity graphs shared across all tasks.
-        tasks: List of (SimulationParams, relay_nodes) pairs.
+        tasks: List of (SimulationParams, relay_nodes) or
+            (SimulationParams, relay_nodes, extra_kwargs) tuples, where
+            extra_kwargs is passed through to ``simulate`` (e.g. assignment).
         max_workers: Number of worker processes. 1 disables multiprocessing.
 
     Yields:
@@ -161,14 +175,15 @@ def iter_batch(
     """
     n = len(tasks)
     if max_workers <= 1 or n == 1:
-        for i, (params, relay_nodes) in enumerate(tasks):
+        for i, task in enumerate(tasks):
+            params, relay_nodes, extra_kwargs = _split_task(task)
             buf = io.StringIO()
             with redirect_stdout(buf):
-                yield i, _simulate(graphs, params, relay_nodes)
+                yield i, _simulate(graphs, params, relay_nodes, **extra_kwargs)
         return
 
     indexed = [
-        (i, params, relay_nodes) for i, (params, relay_nodes) in enumerate(tasks)
+        (i, *_split_task(task)) for i, task in enumerate(tasks)
     ]
     with Pool(
         processes=max_workers, initializer=_worker_init, initargs=(graphs,)

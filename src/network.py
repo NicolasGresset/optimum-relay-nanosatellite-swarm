@@ -13,7 +13,6 @@ import numpy as np
 import networkx as nx
 from tqdm import tqdm
 
-from . import constants
 from .orbit import (
     OrbitalParameters,
     ground_station_ecef,

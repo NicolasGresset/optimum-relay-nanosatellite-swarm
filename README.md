@@ -18,8 +18,8 @@ This repository contains the full source code and pre-computed data required to 
 ├── results/
 │   ├── generate_data_relay.py  # Runs the simulation across parameter configurations
 │   │                           # and stores results in data/
-│   ├── generate_figures_relay.py  # Produces Figures 4–6 from pre-computed data
-│   └── generate_figures_snapshot.py  # Produces Figures 2–3
+│   ├── generate_figures_relay.py  # Produces Figures 5–7 from pre-computed data
+│   └── generate_figures_snapshot.py  # Produces Figures 3–4
 │
 ├── data/                       # Pre-computed simulation outputs
 │                               # (can be regenerated via generate_data_relay.py)
@@ -76,8 +76,8 @@ pip install -r requirements.txt
 The `data/` directory already contains the simulation outputs used to generate the figures in the paper. To reproduce the figures directly:
 
 ```bash
-python results/generate_figures_snapshot.py   # Figures 2–3
-python results/generate_figures_relay.py      # Figures 4–6
+python results/generate_figures_snapshot.py   # Figures 3–4
+python results/generate_figures_relay.py      # Figures 5–7
 ```
 
 Output figures will be saved in `figures/`.
@@ -90,7 +90,7 @@ The simulation can be re-run from scratch using:
 python results/generate_data_relay.py
 ```
 
-> **Note:** This script takes approximately 30 minutes to complete on a 16-core CPU. It sweeps over relay count $k$, initial data volume $D$, crosslink capacity $C_\mathrm{ISL}$, and reconfiguration time $T_r$, and stores the results in `data/`.
+> **Note:** This script takes approximately 30 minutes to complete on a 16-core CPU. It sweeps over relay count $k$, crosslink capacity $C_\mathrm{ISL}$, reconfiguration time $T_r$, and downlink scheduling policy, and stores the results in `data/`.
 
 ---
 

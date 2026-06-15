@@ -60,15 +60,8 @@ class GridFigConfig:
 
 GRID_CONFIGS: list[GridFigConfig] = [
     GridFigConfig(
-        subdir="D_sweep",
-        fig_name="figure_4.pdf",
-        caption=lambda row: rf"$D$ = {int(row['v_bits']) / 8e6} MB",
-        legend_loc=(0.71, 0.53),
-        sort_key=lambda row: row["v_bits"],
-    ),
-    GridFigConfig(
         subdir="XL_sweep",
-        fig_name="figure_5.pdf",
+        fig_name="figure_6.pdf",
         caption=lambda row: rf"$C_{{ISL}}$ = {float(row['xl_rate_bps']) / 1e6:.1f} Mbps",
         xl_sweep=True,
         legend_fontsize=6,
@@ -76,12 +69,18 @@ GRID_CONFIGS: list[GridFigConfig] = [
     ),
     GridFigConfig(
         subdir="Tr_sweep",
-        fig_name="figure_6.pdf",
+        fig_name="figure_7.pdf",
         caption=lambda row: rf"$T_r$ = {int(row['gs_reconfig_s'])} s",
         legend_fontsize=6,
         sort_key=lambda row: row["gs_reconfig_s"],
     ),
 ]
+
+POLICY_LABELS: dict[str, str] = {
+    "pure_round_robin": "Round robin",
+    "precomputed_latest_first": "Latest-first",
+    "precomputed_earliest_first": "Earliest-first",
+}
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -256,6 +255,21 @@ def fig_xl_sweep(
 
 
 def main() -> None:
+    policy_csv_dir = PROJECT_ROOT / "data" / "downlink_policy_sweep"
+    policy_out = PROJECT_ROOT / "figures" / "figure_5.pdf"
+    policy_csv_files = sorted(policy_csv_dir.glob("*.csv"))
+    if not policy_csv_files:
+        print("[downlink_policy_sweep] No CSV files found, skipping.")
+    else:
+        print(f"\n[downlink_policy_sweep] Loading {len(policy_csv_files)} file(s)…")
+        datasets: list[tuple[str, list[dict]]] = []
+        for path in policy_csv_files:
+            rows = load_results(path)
+            label = POLICY_LABELS.get(path.stem, path.stem)
+            datasets.append((label, rows))
+            print(f"  {path.name} → {label!r}")
+        fig_mean_std(datasets, out=policy_out, legend_loc=(0.5, 0.2), legend_fontsize=6)
+
     for config in GRID_CONFIGS:
         csv_dir = PROJECT_ROOT / "data" / config.subdir
         out_path = PROJECT_ROOT / "figures" / config.fig_name

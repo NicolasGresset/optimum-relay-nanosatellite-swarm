@@ -23,11 +23,15 @@ from src.network import get_nodes_by_type, simulate_network
 from src.params import SimulationParams
 from src.radio import radio_for_target
 from src.scheduling import (
+    SlotAssignmentPolicy,
     SlotBudgetPolicy,
     _compute_visibility,
     _visibility_windows_fast,
     build_schedule,
     equitable_slot_budget,
+    pure_round_robin,
+    round_robin_earliest_first_assignment,
+    round_robin_latest_first_assignment,
 )
 from config import (
     SEED, N_SATELLITES,
@@ -154,28 +158,17 @@ def plot_average_degree(
     plt.savefig(file_name)
 
 
-def plot_schedule(
+def plot_schedule_with_policies(
     graphs: list[nx.Graph],
     params: SimulationParams,
-    instances: list[list[str] | None],
+    schedulable_sats: list[str],
+    policies: list[tuple[str, SlotBudgetPolicy, SlotAssignmentPolicy]],
     file_name: Path,
-    instance_labels: list[str] | None = None,
-    slot_budget: SlotBudgetPolicy = equitable_slot_budget,
     gap_display_s: float | None = None,
     figsize: tuple[float, float] | None = None,
 ) -> None:
     """
-    Multi-instance schedule visualisation — one row per instance, shared compressed time axis.
-
-    Args:
-        graphs: connectivity graphs, one per simulation step.
-        params: simulation parameters.
-        instances: one relay_nodes list per row (None → direct mode, all satellites).
-        instance_labels: y-axis label for each row; defaults to "Instance i".
-        slot_budget: slot allocation policy.
-        gap_display_s: display width of inter-pass gaps; defaults to 10% of the shortest pass.
-        figsize: figure size override.
-        file_name: output path for the saved figure.
+    Compare multiple scheduling policies — one row per policy, shared compressed time axis.
     """
     fs = plt.rcParams["font.size"] + 14
 
@@ -188,26 +181,17 @@ def plot_schedule(
     gs_list = sorted(station_nodes)
 
     visibility = _compute_visibility(graphs, sat_nodes, station_nodes)
-    labels = instance_labels or [f"Instance {i}" for i in range(len(instances))]
-
-    instance_data = []
-    for relay_nodes in instances:
-        schedulable_sats = relay_nodes if relay_nodes is not None else sat_nodes
-        sorted_sats = sorted(schedulable_sats, key=lambda x: int(x.split("_")[1]))
-        schedule = build_schedule(graphs, params, sorted_sats, slot_budget=slot_budget)
-        instance_data.append((schedulable_sats, schedule))
 
     global_visible = np.zeros(deadline_step, dtype=bool)
-    for schedulable_sats, _ in instance_data:
-        for gs_name in gs_list:
-            for sat in schedulable_sats:
-                global_visible |= visibility[gs_name][sat_index[sat], :deadline_step]
+    for gs_name in gs_list:
+        for sat in schedulable_sats:
+            global_visible |= visibility[gs_name][sat_index[sat], :deadline_step]
     global_windows_s = [
         (ws * dt_s, we * dt_s)
         for ws, we in _visibility_windows_fast(global_visible, deadline_step)
     ]
 
-    n_rows = len(instances)
+    n_rows = len(policies)
     if not global_windows_s:
         plt.subplots(n_rows, 1, figsize=figsize or (12, 2 * n_rows))
         return
@@ -222,9 +206,9 @@ def plot_schedule(
     deadline_comp = real_to_comp(params.deadline_s)
 
     comm_color = "#4878CF"
-    reconfig_color = "#aaaaaa"
+    reconfig_color = "#a0522d"
 
-    fig_w = max(10.0, len(global_windows_s) * 2.0 + 4)
+    fig_w = max(12.0, len(global_windows_s) * 2.0 + 6)
     fig_h = max(2.8, n_rows * 1.2 + 1.2)
     fig, axes = plt.subplots(
         n_rows, 1,
@@ -234,15 +218,15 @@ def plot_schedule(
     )
     axes = axes.ravel()
 
-    for row_idx, (schedulable_sats, schedule) in enumerate(instance_data):
+    for row_idx, (policy_label, slot_budget_fn, assignment_fn) in enumerate(policies):
         ax = axes[row_idx]
 
         for _, _, cs, ce, is_active in segments:
             if not is_active:
                 ax.add_patch(mpatches.Rectangle(
                     (cs, 0.0), ce - cs, 1.0,
-                    facecolor="#f0f0f0", edgecolor="#bbbbbb",
-                    hatch="///", linewidth=0.4, zorder=1,
+                    facecolor="#f7f7f7", edgecolor="#999999",
+                    hatch="///", linewidth=0.5, zorder=1,
                 ))
 
         vis_union = np.zeros(deadline_step, dtype=bool)
@@ -254,8 +238,15 @@ def plot_schedule(
             ce = real_to_comp(we * dt_s)
             ax.add_patch(mpatches.Rectangle(
                 (cs, 0.0), ce - cs, 1.0,
-                facecolor="#e8e8e8", linewidth=0, zorder=2,
+                facecolor="#ffffff", edgecolor="#cccccc",
+                linewidth=0.3, zorder=2,
             ))
+
+        schedule = build_schedule(
+            graphs, params, schedulable_sats,
+            slot_budget=slot_budget_fn,
+            assignment=assignment_fn,
+        )
 
         all_slots = []
         for gs_name in gs_list:
@@ -283,7 +274,7 @@ def plot_schedule(
                         real_to_comp(s_start) - real_to_comp(rc_start_step * dt_s),
                         0.8,
                         facecolor=reconfig_color, edgecolor="white",
-                        linewidth=0.4, hatch="xx", alpha=0.9, zorder=3,
+                        linewidth=0.4, hatch="|||", alpha=0.85, zorder=3,
                     ))
 
             ax.add_patch(mpatches.Rectangle(
@@ -305,7 +296,7 @@ def plot_schedule(
         ax.set_ylim(0.0, 1.0)
         ax.set_xlim(0.0, deadline_comp * 1.01)
         ax.set_yticks([0.5])
-        ax.set_yticklabels([""])
+        ax.set_yticklabels("", fontsize=fs)
         ax.tick_params(left=False)
         ax.spines[["top", "right", "left"]].set_visible(False)
 
@@ -319,17 +310,25 @@ def plot_schedule(
 
     legend_handles = [
         mpatches.Patch(facecolor=comm_color, alpha=0.85, label="Communication"),
-        mpatches.Patch(facecolor=reconfig_color, edgecolor="white", hatch="xx",
-                       linewidth=0.4, alpha=0.9, label="Reconfiguration"),
-        mpatches.Patch(facecolor="#f0f0f0", edgecolor="#bbbbbb", hatch="///",
-                       linewidth=0.4, label="Inter-pass gap (compressed)"),
+        mpatches.Patch(
+            facecolor=reconfig_color, edgecolor="white", hatch="|||",
+            linewidth=0.4, alpha=0.85, label="Reconfiguration",
+        ),
+        mpatches.Patch(
+            facecolor="#f7f7f7", edgecolor="#999999", hatch="///",
+            linewidth=0.5, label="Inter-pass gap (compressed)",
+        ),
+        mpatches.Patch(
+            facecolor="#ffffff", edgecolor="#cccccc",
+            linewidth=0.3, label="Visibility window",
+        ),
     ]
     fig.legend(
         handles=legend_handles,
         loc="lower center",
-        ncol=len(legend_handles),
+        ncol=2,
         fontsize=fs,
-        bbox_to_anchor=(0.5, -0.1),
+        bbox_to_anchor=(0.5, -0.16),
         bbox_transform=fig.transFigure,
     )
     fig.tight_layout(rect=(0, 0.08, 1, 1))
@@ -367,7 +366,7 @@ plot_average_degree(
     include_ground=True,
     show_std=True,
     draw_visibility_station="GS_0",
-    file_name=PROJECT_ROOT / "figures" / "figure_2.pdf",
+    file_name=PROJECT_ROOT / "figures" / "figure_3.pdf",
 )
 
 params = SimulationParams(
@@ -380,10 +379,15 @@ params = SimulationParams(
     gs_reconfig_s=30.0,
 )
 
-plot_schedule(
+
+plot_schedule_with_policies(
     graphs,
     params,
-    instances=[[f"SAT_{i}" for i in range(3)], [f"SAT_{i}" for i in range(15)]],
-    instance_labels=["3 relays", "Direct"],
-    file_name=PROJECT_ROOT / "figures" / "figure_3.pdf",
+    [f"SAT_{i}" for i in range(3)],
+    policies=[
+        ("Latest-first", equitable_slot_budget, round_robin_latest_first_assignment),
+        ("Earliest-first", equitable_slot_budget, round_robin_earliest_first_assignment),
+        ("Round-robin", equitable_slot_budget, pure_round_robin),
+    ],
+    file_name=PROJECT_ROOT / "figures" / "figure_4.pdf",
 )

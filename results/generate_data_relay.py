@@ -17,6 +17,11 @@ from src.radio import radio_for_target
 from src.params import SimulationParams
 from src.formation import SWARM_STDDEVS_30KM
 from src.framework import TopologyCache, iter_batch, compute_metrics
+from src.scheduling import (
+    round_robin_latest_first_assignment,
+    round_robin_earliest_first_assignment,
+    pure_round_robin,
+)
 from config import (
     SEED, N_SATELLITES,
     BASE_ORBITAL_PARAMS, STATIONS,
@@ -33,19 +38,11 @@ MAX_COMBINATIONS = 30
 MAX_WORKERS = max(1, (os.cpu_count() or 1) - 1)
 
 # ---------------------------------------------------------------------------
-# Parameter grids
+# Relay sweep — parameter grids
 # Each entry: (VOLUMES_MB, GS_RECONFIGS_S, XL_DL_RATIOS, output_subfolder)
 # ---------------------------------------------------------------------------
 
 GRIDS: list[tuple[list[int], list[float], list[tuple[int, int]], str]] = [
-    (
-        [500, 2_000, 5_000, 10_000],  # VOLUMES_MB
-        [30.0],  # GS_RECONFIGS_S
-        [  # XL_DL_RATIOS
-            (1, 4),
-        ],
-        "D_sweep",
-    ),
     (
         [1_000],  # VOLUMES_MB
         [70.0],  # GS_RECONFIGS_S
@@ -67,6 +64,21 @@ GRIDS: list[tuple[list[int], list[float], list[tuple[int, int]], str]] = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
+# Downlink policy sweep — fixed scenario, one CSV per policy
+# ---------------------------------------------------------------------------
+
+V_MB_POLICY = 1_000
+GS_RECONFIG_POLICY_S = 70.0
+XL_DL_RATIO_POLICY = (1, 100)
+OUTPUT_SUBDIR_POLICY = "downlink_policy_sweep"
+
+POLICIES: list[tuple[str, dict]] = [
+    ("pure_round_robin", {"assignment": pure_round_robin}),
+    ("precomputed_latest_first", {"assignment": round_robin_latest_first_assignment}),
+    ("precomputed_earliest_first", {"assignment": round_robin_earliest_first_assignment}),
+]
+
 CSV_FIELDS = [
     "k",
     "combo_id",
@@ -79,7 +91,6 @@ CSV_FIELDS = [
     "completion_ratio",
     "total_delivered_bits",
 ]
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -153,7 +164,7 @@ def run_experiment() -> None:
     _, graphs = cache.get(N_SATELLITES, SEED)
     print(f"done ({time.perf_counter() - t0:.1f} s)")
 
-    # Pre-generate relay subsets once — reused across all grids and configurations
+    # Pre-generate relay subsets once — reused across all grids and policies
     task_meta: list[tuple[int, int, str, list[str] | None]] = []
     for k in range(1, N_SATELLITES + 1):
         combos = _sample_combinations(sat_names, k, seed=SEED + k)
@@ -163,6 +174,8 @@ def run_experiment() -> None:
     print(
         f"Relay subsets: {n_tasks} tasks per configuration  |  workers: {MAX_WORKERS}"
     )
+
+    # --- Relay sweep (XL + Tr grids) ---
 
     for grid_idx, (
         volumes_mb,
@@ -246,7 +259,76 @@ def run_experiment() -> None:
                 f"  →  {out_path.name}"
             )
 
-    print("\nAll grids complete.")
+    # --- Downlink policy sweep ---
+
+    v_bits_policy = int(V_MB_POLICY * 8e6)
+    xl_num, xl_den = XL_DL_RATIO_POLICY
+    xl_bps_policy = DL_RATE_BPS * xl_num / xl_den
+    params_policy = _make_params(v_bits_policy, GS_RECONFIG_POLICY_S, xl_bps_policy)
+
+    output_dir_policy = PROJECT_ROOT / "data" / OUTPUT_SUBDIR_POLICY
+    output_dir_policy.mkdir(parents=True, exist_ok=True)
+
+    existing_csvs = list(output_dir_policy.glob("*.csv"))
+    if existing_csvs:
+        for p in existing_csvs:
+            p.unlink()
+        print(f"  Removed {len(existing_csvs)} existing CSV(s) from '{OUTPUT_SUBDIR_POLICY}'")
+
+    print(
+        f"\n{'='*60}\n"
+        f"Downlink policy sweep\n"
+        f"  V={V_MB_POLICY} MB  GS_reconfig={GS_RECONFIG_POLICY_S:.0f} s"
+        f"  XL/DL={xl_num}/{xl_den} ({xl_bps_policy / 1e6:.3g} Mbps)\n"
+        f"  Relay subsets: {n_tasks} tasks per policy  |  workers: {MAX_WORKERS}\n"
+        f"  Policies: {[name for name, _ in POLICIES]}\n"
+        f"{'='*60}"
+    )
+
+    for pol_idx, (policy_name, extra_kwargs) in enumerate(POLICIES, start=1):
+        out_path = output_dir_policy / f"{policy_name}.csv"
+        print(f"\n[{pol_idx}/{len(POLICIES)}] policy='{policy_name}'", flush=True)
+
+        tasks = [
+            (params_policy, relay_nodes, extra_kwargs)
+            for _, _, _, relay_nodes in task_meta
+        ]
+
+        t_pol = time.perf_counter()
+        completed = 0
+
+        with open(out_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+            writer.writeheader()
+            f.flush()
+
+            for task_idx, result in iter_batch(graphs, tasks, max_workers=MAX_WORKERS):
+                completed += 1
+                k, combo_id, combo_str, _ = task_meta[task_idx]
+                metrics = compute_metrics(result, N_SATELLITES, v_bits_policy)
+                writer.writerow(
+                    {
+                        "k": k,
+                        "combo_id": combo_id,
+                        "relay_subset": combo_str,
+                        "n_satellites": N_SATELLITES,
+                        "v_bits": v_bits_policy,
+                        "seed": SEED,
+                        "gs_reconfig_s": GS_RECONFIG_POLICY_S,
+                        "xl_rate_bps": xl_bps_policy,
+                        **metrics,
+                    }
+                )
+                f.flush()
+                print(f"  {completed}/{n_tasks}", end="\r", flush=True)
+
+        print(
+            f"  {n_tasks}/{n_tasks}  done"
+            f" ({time.perf_counter() - t_pol:.1f} s)"
+            f"  →  {out_path.name}"
+        )
+
+    print("\nAll experiments complete.")
 
 
 if __name__ == "__main__":

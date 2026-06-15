@@ -11,14 +11,21 @@ import networkx as nx
 
 from .network import get_nodes_by_type
 from .params import SimulationParams, SimulationResult
-from .radio import RadioParams, link_capacity_for_edge
+from .radio import link_capacity_for_edge
 from .routing import (
     RelaySelectPolicy,
     NextHopPolicy,
     nearest_relay,
     shortest_path_next_hop,
 )
-from .scheduling import Slot, SlotBudgetPolicy, build_schedule, equitable_slot_budget
+from .scheduling import (
+    Slot,
+    SlotAssignmentPolicy,
+    SlotBudgetPolicy,
+    build_schedule,
+    equitable_slot_budget,
+    round_robin_latest_first_assignment,
+)
 
 # ---------------------------------------------------------------------------
 # Data transfer primitives
@@ -86,6 +93,8 @@ class Simulator:
     relay_select : policy selecting the target relay for a given satellite.
     next_hop     : policy selecting the next-hop toward the relay.
     slot_budget  : policy allocating GS slots per relay (relay mode only).
+    assignment   : policy deciding when allocated GS slots are placed
+                   (relay mode only).
     """
 
     def __init__(
@@ -95,12 +104,14 @@ class Simulator:
         relay_select: RelaySelectPolicy = nearest_relay,
         next_hop: NextHopPolicy = shortest_path_next_hop,
         slot_budget: SlotBudgetPolicy = equitable_slot_budget,
+        assignment: SlotAssignmentPolicy = round_robin_latest_first_assignment,
     ) -> None:
         self.params = params
         self._relay_nodes = relay_nodes
         self._relay_select = relay_select
         self._next_hop = next_hop
         self._slot_budget = slot_budget
+        self._assignment = assignment
 
     def run(self, graphs: list[nx.Graph]) -> SimulationResult:
         """Run the simulation and return aggregated results."""
@@ -124,6 +135,7 @@ class Simulator:
             self.params,
             sorted(self._relay_set, key=lambda x: int(x.split("_")[1])),
             slot_budget=self._slot_budget,
+            assignment=self._assignment,
         )
         self._step_to_slot: dict[str, dict[int, Slot]] = {
             gs: {}
@@ -243,6 +255,8 @@ def simulate(
     relay_nodes: list[str] | None = None,
     relay_select: RelaySelectPolicy = nearest_relay,
     next_hop: NextHopPolicy = shortest_path_next_hop,
+    slot_budget: SlotBudgetPolicy = equitable_slot_budget,
+    assignment: SlotAssignmentPolicy = round_robin_latest_first_assignment,
 ) -> SimulationResult:
     """Functional shortcut: creates a Simulator and calls run()."""
-    return Simulator(params, relay_nodes, relay_select, next_hop).run(graphs)
+    return Simulator(params, relay_nodes, relay_select, next_hop, slot_budget, assignment).run(graphs)
